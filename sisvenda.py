@@ -1,16 +1,16 @@
 import sqlite3
-import os
+from datetime import datetime
 
 # --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 def inicializar_db():
-    conn = sqlite3.connect('sistema_gestao.db')
+    conn = sqlite3.connect('sistema_vendas.db')
     cursor = conn.cursor()
     
-    # Tabela de Usuários (Login)
+    # Tabela de Administradores (Acesso ao sistema)
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS usuarios (
+        CREATE TABLE IF NOT EXISTS admins (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
+            usuario TEXT UNIQUE NOT NULL,
             senha TEXT NOT NULL
         )
     ''')
@@ -20,7 +20,8 @@ def inicializar_db():
         CREATE TABLE IF NOT EXISTS clientes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
-            email TEXT
+            email TEXT,
+            telefone TEXT
         )
     ''')
     
@@ -29,7 +30,8 @@ def inicializar_db():
         CREATE TABLE IF NOT EXISTS produtos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
-            preco REAL NOT NULL
+            preco REAL NOT NULL,
+            estoque INTEGER NOT NULL
         )
     ''')
     
@@ -37,124 +39,162 @@ def inicializar_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS vendas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            cliente_id INTEGER,
-            produto_id INTEGER,
+            id_cliente INTEGER,
+            id_produto INTEGER,
             quantidade INTEGER,
-            data TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(cliente_id) REFERENCES clientes(id),
-            FOREIGN KEY(produto_id) REFERENCES produtos(id)
+            total REAL,
+            data TEXT,
+            FOREIGN KEY(id_cliente) REFERENCES clientes(id),
+            FOREIGN KEY(id_produto) REFERENCES produtos(id)
         )
     ''')
     
     conn.commit()
     conn.close()
 
-# --- FUNÇÕES DE OPERAÇÃO ---
+# --- FUNÇÕES DE AUTENTICAÇÃO ---
 
-def cadastrar_usuario():
-    print("\n--- Cadastro de Novo Usuário ---")
+def cadastrar_admin():
+    print("\n--- NOVO ADMINISTRADOR ---")
     user = input("Usuário: ")
     senha = input("Senha: ")
     try:
-        conn = sqlite3.connect('sistema_gestao.db')
+        conn = sqlite3.connect('sistema_vendas.db')
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO usuarios (username, senha) VALUES (?, ?)", (user, senha))
+        cursor.execute("INSERT INTO admins (usuario, senha) VALUES (?, ?)", (user, senha))
         conn.commit()
-        print("Usuário cadastrado com sucesso!")
+        print(f"✅ Admin '{user}' cadastrado com sucesso!")
     except sqlite3.IntegrityError:
-        print("Erro: Este nome de usuário já existe.")
+        print("❌ Erro: Este nome de usuário já existe.")
     finally:
         conn.close()
 
 def login():
-    print("\n--- Login ---")
+    print("\n--- LOGIN DO SISTEMA ---")
     user = input("Usuário: ")
     senha = input("Senha: ")
     
-    conn = sqlite3.connect('sistema_gestao.db')
+    conn = sqlite3.connect('sistema_vendas.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM usuarios WHERE username = ? AND senha = ?", (user, senha))
-    resultado = cursor.fetchone()
+    cursor.execute("SELECT * FROM admins WHERE usuario = ? AND senha = ?", (user, senha))
+    usuario = cursor.fetchone()
     conn.close()
-    return resultado
+    return usuario
 
-def cadastrar_cliente():
-    nome = input("Nome do Cliente: ")
-    email = input("Email: ")
-    conn = sqlite3.connect('sistema_gestao.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO clientes (nome, email) VALUES (?, ?)", (nome, email))
-    conn.commit()
-    conn.close()
-    print("Cliente cadastrado!")
+# --- FUNÇÕES DE CADASTRO ---
 
-def cadastrar_produto():
-    nome = input("Nome do Produto: ")
-    preco = float(input("Preço: "))
-    conn = sqlite3.connect('sistema_gestao.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO produtos (nome, preco) VALUES (?, ?)", (nome, preco))
-    conn.commit()
-    conn.close()
-    print("Produto cadastrado!")
-
-def registrar_venda():
-    conn = sqlite3.connect('sistema_gestao.db')
-    cursor = conn.cursor()
-    
-    # Lista clientes e produtos para facilitar a escolha
-    print("\nClientes disponíveis:")
-    for row in cursor.execute("SELECT id, nome FROM clientes"): print(row)
-    c_id = int(input("ID do Cliente: "))
-    
-    print("\nProdutos disponíveis:")
-    for row in cursor.execute("SELECT id, nome, preco FROM produtos"): print(row)
-    p_id = int(input("ID do Produto: "))
-    
-    qtd = int(input("Quantidade: "))
-    
-    cursor.execute("INSERT INTO vendas (cliente_id, produto_id, quantidade) VALUES (?, ?, ?)", (c_id, p_id, qtd))
-    conn.commit()
-    conn.close()
-    print("Venda registrada com sucesso!")
-
-# --- MENU PRINCIPAL ---
-
-def menu_sistema():
+def menu_cadastros():
     while True:
-        print("\n=== SISTEMA DE GESTÃO ===")
+        print("\n--- PAINEL DE GESTÃO ---")
         print("1. Cadastrar Cliente")
         print("2. Cadastrar Produto")
         print("3. Registrar Venda")
-        print("4. Sair")
+        print("4. Relatório de Vendas")
+        print("5. Sair (Logout)")
+        
         opcao = input("Escolha: ")
         
-        if opcao == '1': cadastrar_cliente()
-        elif opcao == '2': cadastrar_produto()
-        elif opcao == '3': registrar_venda()
-        elif opcao == '4': break
-        else: print("Opção inválida.")
+        if opcao == '1':
+            nome = input("Nome: ")
+            email = input("Email: ")
+            executar_query("INSERT INTO clientes (nome, email) VALUES (?, ?)", (nome, email))
+            print("✅ Cliente salvo!")
+            
+        elif opcao == '2':
+            nome = input("Produto: ")
+            preco = float(input("Preço: "))
+            estoque = int(input("Qtd em Estoque: "))
+            executar_query("INSERT INTO produtos (nome, preco, estoque) VALUES (?, ?, ?)", (nome, preco, estoque))
+            print("✅ Produto salvo!")
+            
+        elif opcao == '3':
+            realizar_venda()
+            
+        elif opcao == '4':
+            exibir_vendas()
+            
+        elif opcao == '5':
+            break
+
+# --- LÓGICA DE VENDAS ---
+
+def realizar_venda():
+    conn = sqlite3.connect('sistema_vendas.db')
+    cursor = conn.cursor()
+    
+    # Listar Clientes e Produtos para escolha
+    print("\n--- SELECIONE O CLIENTE ---")
+    clientes = cursor.execute("SELECT id, nome FROM clientes").fetchall()
+    for c in clientes: print(f"[{c[0]}] {c[1]}")
+    id_c = int(input("ID do Cliente: "))
+    
+    print("\n--- SELECIONE O PRODUTO ---")
+    produtos = cursor.execute("SELECT id, nome, preco FROM produtos").fetchall()
+    for p in produtos: print(f"[{p[0]}] {p[1]} - R$ {p[2]}")
+    id_p = int(input("ID do Produto: "))
+    
+    qtd = int(input("Quantidade: "))
+    
+    # Busca preço e calcula total
+    cursor.execute("SELECT preco FROM produtos WHERE id = ?", (id_p,))
+    preco_unitario = cursor.fetchone()[0]
+    total = preco_unitario * qtd
+    data_hoje = datetime.now().strftime("%d/%m/%Y %H:%M")
+    
+    cursor.execute("INSERT INTO vendas (id_cliente, id_produto, quantidade, total, data) VALUES (?, ?, ?, ?, ?)",
+                   (id_c, id_p, qtd, total, data_hoje))
+    
+    # Baixa no estoque
+    cursor.execute("UPDATE produtos SET estoque = estoque - ? WHERE id = ?", (qtd, id_p))
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ Venda finalizada! Total: R$ {total:.2f}")
+
+def exibir_vendas():
+    conn = sqlite3.connect('sistema_vendas.db')
+    cursor = conn.cursor()
+    query = '''
+        SELECT v.id, c.nome, p.nome, v.quantidade, v.total, v.data 
+        FROM vendas v
+        JOIN clientes c ON v.id_cliente = c.id
+        JOIN produtos p ON v.id_produto = p.id
+    '''
+    print("\n--- HISTÓRICO DE VENDAS ---")
+    for linha in cursor.execute(query):
+        print(f"Venda {linha[0]} | Cliente: {linha[1]} | Item: {linha[2]} | Qtd: {linha[3]} | Total: R${linha[4]} | Data: {linha[5]}")
+    conn.close()
+
+def executar_query(sql, params=()):
+    conn = sqlite3.connect('sistema_vendas.db')
+    cursor = conn.cursor()
+    cursor.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+# --- INTERFACE PRINCIPAL ---
 
 def main():
     inicializar_db()
-    
     while True:
-        print("\n--- BEM VINDO ---")
-        print("1. Login")
-        print("2. Criar Conta")
-        print("3. Sair")
+        print("\n=== SISTEMA ERP v1.0 ===")
+        print("1. Login Admin")
+        print("2. Cadastrar Novo Admin")
+        print("3. Encerrar")
+        
         escolha = input("Opção: ")
         
         if escolha == '1':
-            usuario_logado = login()
-            if usuario_logado:
-                print(f"\nBem-vindo, {usuario_logado[1]}!")
-                menu_sistema()
+            adm = login()
+            if adm:
+                print(f"\n🔓 Acesso autorizado! Bem-vindo, {adm[1]}.")
+                menu_cadastros()
             else:
-                print("Usuário ou senha incorretos.")
+                print("\n❌ Usuário ou senha incorretos.")
         elif escolha == '2':
-            cadastrar_usuario()
+            cadastrar_admin()
         elif escolha == '3':
+            print("Saindo...")
             break
 
 if __name__ == "__main__":
