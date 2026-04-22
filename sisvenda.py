@@ -1,201 +1,96 @@
-import sqlite3
-from datetime import datetime
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 
-# --- CONFIGURAÇÃO DO BANCO DE DADOS ---
-def inicializar_db():
-    conn = sqlite3.connect('sistema_vendas.db')
-    cursor = conn.cursor()
-    
-    # Tabela de Administradores (Acesso ao sistema)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            usuario TEXT UNIQUE NOT NULL,
-            senha TEXT NOT NULL
-        )
-    ''')
-    
-    # Tabela de Clientes
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS clientes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            email TEXT,
-            telefone TEXT
-        )
-    ''')
-    
-    # Tabela de Produtos
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS produtos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            preco REAL NOT NULL,
-            estoque INTEGER NOT NULL
-        )
-    ''')
-    
-    # Tabela de Vendas
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS vendas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            id_cliente INTEGER,
-            id_produto INTEGER,
-            quantidade INTEGER,
-            total REAL,
-            data TEXT,
-            FOREIGN KEY(id_cliente) REFERENCES clientes(id),
-            FOREIGN KEY(id_produto) REFERENCES produtos(id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'chave_secreta_vendas'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///sisvenda.db'
+db = SQLAlchemy(app)
 
-# --- FUNÇÕES DE AUTENTICAÇÃO ---
+# --- MODELOS DO BANCO DE DADOS ---
+class Usuario(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    password = db.Column(db.String(200), nullable=False)
 
-def cadastrar_admin():
-    print("\n--- NOVO ADMINISTRADOR ---")
-    user = input("Usuário: ")
-    senha = input("Senha: ")
-    try:
-        conn = sqlite3.connect('sistema_vendas.db')
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO admins (usuario, senha) VALUES (?, ?)", (user, senha))
-        conn.commit()
-        print(f"✅ Admin '{user}' cadastrado com sucesso!")
-    except sqlite3.IntegrityError:
-        print("❌ Erro: Este nome de usuário já existe.")
-    finally:
-        conn.close()
+class Cliente(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(100))
 
+class Produto(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(100), nullable=False)
+    preco = db.Column(db.Float, nullable=False)
+    estoque = db.Column(db.Integer, default=0)
+
+class Venda(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    cliente_id = db.Column(db.Integer, db.ForeignKey('cliente.id'))
+    total = db.Column(db.Float, default=0.0)
+
+# Criar o banco de dados
+with app.app_context():
+    db.create_all()
+    # Criar um usuário padrão se não existir
+    if not Usuario.query.filter_by(username='admin').first():
+        hashed_pw = generate_password_hash('1234', method='pbkdf2:sha256')
+        admin = Usuario(username='admin', password=hashed_pw)
+        db.session.add(admin)
+        db.session.commit()
+
+# --- ROTAS ---
+
+@app.route('/')
+def index():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    return render_template('index.html')
+
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    print("\n--- LOGIN DO SISTEMA ---")
-    user = input("Usuário: ")
-    senha = input("Senha: ")
-    
-    conn = sqlite3.connect('sistema_vendas.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM admins WHERE usuario = ? AND senha = ?", (user, senha))
-    usuario = cursor.fetchone()
-    conn.close()
-    return usuario
+    if request.method == 'POST':
+        user = Usuario.query.filter_by(username=request.form['username']).first()
+        if user and check_password_hash(user.password, request.form['password']):
+            session['user_id'] = user.id
+            return redirect(url_for('index'))
+        flash('Login inválido!')
+    return render_template('login.html')
 
-# --- FUNÇÕES DE CADASTRO ---
+@app.route('/clientes', methods=['GET', 'POST'])
+def clientes():
+    if request.method == 'POST':
+        novo_cliente = Cliente(nome=request.form['nome'], email=request.form['email'])
+        db.session.add(novo_cliente)
+        db.session.commit()
+    lista = Cliente.query.all()
+    return render_template('clientes.html', clientes=lista)
 
-def menu_cadastros():
-    while True:
-        print("\n--- PAINEL DE GESTÃO ---")
-        print("1. Cadastrar Cliente")
-        print("2. Cadastrar Produto")
-        print("3. Registrar Venda")
-        print("4. Relatório de Vendas")
-        print("5. Sair (Logout)")
-        
-        opcao = input("Escolha: ")
-        
-        if opcao == '1':
-            nome = input("Nome: ")
-            email = input("Email: ")
-            executar_query("INSERT INTO clientes (nome, email) VALUES (?, ?)", (nome, email))
-            print("✅ Cliente salvo!")
-            
-        elif opcao == '2':
-            nome = input("Produto: ")
-            preco = float(input("Preço: "))
-            estoque = int(input("Qtd em Estoque: "))
-            executar_query("INSERT INTO produtos (nome, preco, estoque) VALUES (?, ?, ?)", (nome, preco, estoque))
-            print("✅ Produto salvo!")
-            
-        elif opcao == '3':
-            realizar_venda()
-            
-        elif opcao == '4':
-            exibir_vendas()
-            
-        elif opcao == '5':
-            break
+@app.route('/produtos', methods=['GET', 'POST'])
+def produtos():
+    if request.method == 'POST':
+        novo_prod = Produto(nome=request.form['nome'], preco=float(request.form['preco']), estoque=int(request.form['estoque']))
+        db.session.add(novo_prod)
+        db.session.commit()
+    lista = Produto.query.all()
+    return render_template('produtos.html', produtos=lista)
 
-# --- LÓGICA DE VENDAS ---
+@app.route('/venda', methods=['GET', 'POST'])
+def nova_venda():
+    clientes = Cliente.query.all()
+    produtos = Produto.query.all()
+    if request.method == 'POST':
+        # Lógica simplificada: registra a venda total
+        venda = Venda(cliente_id=request.form['cliente_id'], total=float(request.form['total']))
+        db.session.add(venda)
+        db.session.commit()
+        flash('Venda registrada!')
+    return render_template('vendas.html', clientes=clientes, produtos=produtos)
 
-def realizar_venda():
-    conn = sqlite3.connect('sistema_vendas.db')
-    cursor = conn.cursor()
-    
-    # Listar Clientes e Produtos para escolha
-    print("\n--- SELECIONE O CLIENTE ---")
-    clientes = cursor.execute("SELECT id, nome FROM clientes").fetchall()
-    for c in clientes: print(f"[{c[0]}] {c[1]}")
-    id_c = int(input("ID do Cliente: "))
-    
-    print("\n--- SELECIONE O PRODUTO ---")
-    produtos = cursor.execute("SELECT id, nome, preco FROM produtos").fetchall()
-    for p in produtos: print(f"[{p[0]}] {p[1]} - R$ {p[2]}")
-    id_p = int(input("ID do Produto: "))
-    
-    qtd = int(input("Quantidade: "))
-    
-    # Busca preço e calcula total
-    cursor.execute("SELECT preco FROM produtos WHERE id = ?", (id_p,))
-    preco_unitario = cursor.fetchone()[0]
-    total = preco_unitario * qtd
-    data_hoje = datetime.now().strftime("%d/%m/%Y %H:%M")
-    
-    cursor.execute("INSERT INTO vendas (id_cliente, id_produto, quantidade, total, data) VALUES (?, ?, ?, ?, ?)",
-                   (id_c, id_p, qtd, total, data_hoje))
-    
-    # Baixa no estoque
-    cursor.execute("UPDATE produtos SET estoque = estoque - ? WHERE id = ?", (qtd, id_p))
-    
-    conn.commit()
-    conn.close()
-    print(f"✅ Venda finalizada! Total: R$ {total:.2f}")
+@app.route('/logout')
+def logout():
+    session.pop('user_id', None)
+    return redirect(url_for('login'))
 
-def exibir_vendas():
-    conn = sqlite3.connect('sistema_vendas.db')
-    cursor = conn.cursor()
-    query = '''
-        SELECT v.id, c.nome, p.nome, v.quantidade, v.total, v.data 
-        FROM vendas v
-        JOIN clientes c ON v.id_cliente = c.id
-        JOIN produtos p ON v.id_produto = p.id
-    '''
-    print("\n--- HISTÓRICO DE VENDAS ---")
-    for linha in cursor.execute(query):
-        print(f"Venda {linha[0]} | Cliente: {linha[1]} | Item: {linha[2]} | Qtd: {linha[3]} | Total: R${linha[4]} | Data: {linha[5]}")
-    conn.close()
-
-def executar_query(sql, params=()):
-    conn = sqlite3.connect('sistema_vendas.db')
-    cursor = conn.cursor()
-    cursor.execute(sql, params)
-    conn.commit()
-    conn.close()
-
-# --- INTERFACE PRINCIPAL ---
-
-def main():
-    inicializar_db()
-    while True:
-        print("\n=== SISTEMA ERP v1.0 ===")
-        print("1. Login Admin")
-        print("2. Cadastrar Novo Admin")
-        print("3. Encerrar")
-        
-        escolha = input("Opção: ")
-        
-        if escolha == '1':
-            adm = login()
-            if adm:
-                print(f"\n🔓 Acesso autorizado! Bem-vindo, {adm[1]}.")
-                menu_cadastros()
-            else:
-                print("\n❌ Usuário ou senha incorretos.")
-        elif escolha == '2':
-            cadastrar_admin()
-        elif escolha == '3':
-            print("Saindo...")
-            break
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    app.run(debug=True)
