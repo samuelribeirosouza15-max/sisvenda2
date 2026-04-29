@@ -1,6 +1,6 @@
 import os
+import sqlite3
 from flask import Flask, render_template, request, redirect, url_for, flash, session
-from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -8,40 +8,70 @@ app.config['SECRET_KEY'] = 'uma_chave_muito_segura_123'
 
 # Configuração do caminho do Banco de Dados
 basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'sisvenda.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+DB_PATH = os.path.join(basedir, 'sisvenda.db')
 
-db = SQLAlchemy(app)
+# --- FUNÇÕES DE BANCO DE DADOS ---
 
-# --- MODELOS ---
-class Usuario(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
-    password = db.Column(db.String(200), nullable=False)
+def get_db_connection():
+    """Cria uma conexão com o banco e permite acessar colunas pelo nome."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # Isso permite usar cliente['nome'] em vez de cliente[1]
+    return conn
 
-class Cliente(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    nome = db.Column(db.String(100), nullable=False)
-    email = db.Column(db.String(100))
+def init_db():
+    """Cria as tabelas e o usuário admin inicial se não existirem."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Criar tabela de Usuários
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS usuario (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+    ''')
+    
+    # Criar tabela de Clientes
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cliente (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            email TEXT
+        )
+    ''')
+    
+    # Criar tabela de Produtos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS produto (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            preco REAL NOT NULL,
+            estoque INTEGER DEFAULT 0
+        )
+    ''')
+    
+    # Criar tabela de Vendas
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS venda (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER,
+            total REAL DEFAULT 0.0,
+            FOREIGN KEY (cliente_id) REFERENCES cliente (id)
+        )
+    ''')
+    
+    # Criar usuário admin padrão
+    admin_exists = cursor.execute('SELECT * FROM usuario WHERE username = ?', ('admin',)).fetchone()
+    if not admin_exists:
+        hashed_pw = generate_password_hash('1234')
+        cursor.execute('INSERT INTO usuario (username, password) VALUES (?, ?)', ('admin', hashed_pw))
+    
+    conn.commit()
+    conn.close()
 
-class Produto(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    nome = db.Column(db.String(100), nullable=False)
-    preco = db.Column(db.Float, nullable=False)
-    estoque = db.Column(db.Integer, default=0)
-
-class Venda(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    cliente_id = db.Column(db.Integer, db.ForeignKey('cliente.id'))
-    total = db.Column(db.Float, default=0.0)
-
-# Inicialização do Banco
-with app.app_context():
-    db.create_all()
-    if not Usuario.query.filter_by(username='admin').first():
-        admin = Usuario(username='admin', password=generate_password_hash('1234'))
-        db.session.add(admin)
-        db.session.commit()
+# Inicializa o banco ao rodar o app
+init_db()
 
 # --- AUXILIAR DE LOGIN ---
 def login_obrigatorio():
@@ -57,10 +87,17 @@ def index():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        user = Usuario.query.filter_by(username=request.form.get('username')).first()
-        if user and check_password_hash(user.password, request.form.get('password')):
-            session['user_id'] = user.id
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        conn = get_db_connection()
+        user = conn.execute('SELECT * FROM usuario WHERE username = ?', (username,)).fetchone()
+        conn.close()
+
+        if user and check_password_hash(user['password'], password):
+            session['user_id'] = user['id']
             return redirect(url_for('index'))
+        
         flash('Usuário ou senha incorretos!', 'danger')
     return render_template('login.html')
 
@@ -68,46 +105,55 @@ def login():
 def clientes():
     if not login_obrigatorio(): return redirect(url_for('login'))
     
+    conn = get_db_connection()
     if request.method == 'POST':
-        novo = Cliente(nome=request.form['nome'], email=request.form['email'])
-        db.session.add(novo)
-        db.session.commit()
+        nome = request.form['nome']
+        email = request.form['email']
+        conn.execute('INSERT INTO cliente (nome, email) VALUES (?, ?)', (nome, email))
+        conn.commit()
         flash('Cliente cadastrado!', 'success')
         
-    lista = Cliente.query.all()
+    lista = conn.execute('SELECT * FROM cliente').fetchall()
+    conn.close()
     return render_template('clientes.html', clientes=lista)
 
 @app.route('/produtos', methods=['GET', 'POST'])
 def produtos():
     if not login_obrigatorio(): return redirect(url_for('login'))
     
+    conn = get_db_connection()
     if request.method == 'POST':
         try:
-            novo = Produto(
-                nome=request.form['nome'], 
-                preco=float(request.form['preco']), 
-                estoque=int(request.form['estoque'])
-            )
-            db.session.add(novo)
-            db.session.commit()
+            nome = request.form['nome']
+            preco = float(request.form['preco'])
+            estoque = int(request.form['estoque'])
+            conn.execute('INSERT INTO produto (nome, preco, estoque) VALUES (?, ?, ?)', (nome, preco, estoque))
+            conn.commit()
             flash('Produto cadastrado!', 'success')
         except ValueError:
-            flash('Erro nos dados. Use ponto para decimais e números inteiros no estoque.', 'warning')
+            flash('Erro nos dados. Use ponto para decimais.', 'warning')
         
-    lista = Produto.query.all()
+    lista = conn.execute('SELECT * FROM produto').fetchall()
+    conn.close()
     return render_template('produtos.html', produtos=lista)
 
 @app.route('/venda', methods=['GET', 'POST'])
 def nova_venda():
     if not login_obrigatorio(): return redirect(url_for('login'))
     
+    conn = get_db_connection()
     if request.method == 'POST':
-        venda = Venda(cliente_id=request.form['cliente_id'], total=float(request.form['total']))
-        db.session.add(venda)
-        db.session.commit()
+        cliente_id = request.form['cliente_id']
+        total = float(request.form['total'])
+        conn.execute('INSERT INTO venda (cliente_id, total) VALUES (?, ?)', (cliente_id, total))
+        conn.commit()
         flash('Venda registrada!', 'success')
-        
-    return render_template('vendas.html', clientes=Cliente.query.all(), produtos=Produto.query.all())
+    
+    clientes = conn.execute('SELECT * FROM cliente').fetchall()
+    produtos = conn.execute('SELECT * FROM produto').fetchall()
+    conn.close()
+    
+    return render_template('vendas.html', clientes=clientes, produtos=produtos)
 
 @app.route('/logout')
 def logout():
